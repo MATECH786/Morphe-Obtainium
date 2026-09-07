@@ -19,7 +19,15 @@ run() {
         fi
         sleep 4
 
-        mount_rv "$BASEPATH"
+        if [ "$(mount_mode)" = nomount ]; then
+                if ! nm_check; then
+                        ch_desc_err "NoMount unavailable"
+                        return
+                fi
+                inject_rv "$BASEPATH"
+        else
+                mount_rv "$BASEPATH"
+        fi
 }
 
 if [ ! -f "$MODDIR/disabled_by_action" ]; then

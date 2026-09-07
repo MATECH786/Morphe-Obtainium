@@ -100,7 +100,7 @@ for table_name in $(toml_get_table_names); do
                 idx=$((idx - 1))
         fi
 
-        declare -A app_args
+        declare -A app_args=()
         patches_src=$(toml_get "$t" patches-source) || patches_src=$DEF_PATCHES_SRC
         patches_ver=$(toml_get "$t" patches-version) || patches_ver=$DEF_PATCHES_VER
         cli_src=$(toml_get "$t" cli-source) || cli_src=$DEF_CLI_SRC
@@ -129,17 +129,6 @@ for table_name in $(toml_get_table_names); do
         app_args[version]=$(toml_get "$t" version) || app_args[version]="auto"
         app_args[app_name]=$(toml_get "$t" app-name) || app_args[app_name]=$table_name
 
-        app_args[shim_jar]=""
-        app_args[shim_ver]=""
-        if [ "${app_args[app_name],,}" = "x" ]; then
-                shim_result=""
-                if ! shim_result="$(get_gitlab_prebuilts "inotia00/x-shim" "latest")"; then
-                        echo "${table_name}|FAILED|Could not download shim prebuilts" >> "$TEMP_DIR/build_failed.log"
-                        continue
-                fi
-                app_args[shim_jar]=$(awk '{print $1}' <<<"$shim_result")
-                app_args[shim_ver]=$(awk '{print $2}' <<<"$shim_result")
-        fi
         app_args[patcher_args]=$(toml_get "$t" patcher-args) || app_args[patcher_args]=""
         app_args[table]=$table_name
         app_args[build_mode]=$(toml_get "$t" build-mode) && {
@@ -183,7 +172,7 @@ REPO_URL="https://github.com/${GITHUB_REPOSITORY:-Drsexo/Morphe-Obtainium}"
 
 mkdir -p "$TEMP_DIR/release_notes"
 
-while IFS='|' read -r table_name version app_name brand patches_src patches_ver build_mode arch_f shim_ver; do
+while IFS='|' read -r table_name version app_name brand patches_src patches_ver build_mode arch_f; do
         [ -z "$table_name" ] && continue
 
         local_app_tag="${app_name,,}"
@@ -224,14 +213,6 @@ while IFS='|' read -r table_name version app_name brand patches_src patches_ver 
                 fi
         done
 
-        shim_display=""
-        shim_changelog=""
-        app_name_lower_chk="${app_name,,}"
-        if [ "$app_name_lower_chk" = "x" ] && [ -n "${shim_ver-}" ]; then
-                shim_display="$shim_ver"
-                shim_changelog="[Shim](https://gitlab.com/inotia00/x-shim/-/releases)"
-        fi
-
         app_icon=""
         raw_base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY:-Drsexo/Morphe-Obtainium}/main/docs"
         case "${app_name,,}" in
@@ -263,16 +244,9 @@ while IFS='|' read -r table_name version app_name brand patches_src patches_ver 
                 if [ -n "$cli_ver_display" ]; then
                         echo "**${cli_name}** \`${cli_ver_display}\`  "
                 fi
-                if [ -n "$shim_display" ]; then
-                        echo "**Shim** \`${shim_display}\`  "
-                fi
                 echo "**Date** \`${BUILD_DATE}\`  "
                 echo ""
-                if [ -n "$shim_changelog" ]; then
-                        echo "📋 Changelogs: ${patches_changelog} · ${cli_changelog} · ${shim_changelog}"
-                else
-                        echo "📋 Changelogs: ${patches_changelog} · ${cli_changelog}"
-                fi
+                echo "📋 Changelogs: ${patches_changelog} · ${cli_changelog}"
                 if [ "$needs_microg" = true ]; then
                         echo ""
                         echo "<sub>"
@@ -290,7 +264,7 @@ while IFS='|' read -r table_name version app_name brand patches_src patches_ver 
 done < "$TEMP_DIR/build_success.log"
 
 if [ -f "$TEMP_DIR/build_success.log" ]; then
-        while IFS='|' read -r _t _v _a brand patches_src patches_ver _bm _af _sv; do
+        while IFS='|' read -r _t _v _a brand patches_src patches_ver _bm _af; do
                 [ -z "$patches_src" ] && continue
                 src_key="${patches_src##*/}"
                 src_key="${src_key,,}"

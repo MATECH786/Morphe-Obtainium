@@ -1,6 +1,6 @@
 #!/system/bin/sh
 
-RV_DIR=/data/adb/Morphe-Module
+RV_DIR=${RV_DIR:-/data/adb/Morphe-Module}
 RVPATH=${RV_DIR}/${MODDIR##*/}.apk
 . "$MODDIR/config"
 
@@ -81,6 +81,29 @@ get_mounts() {
         grep -F "$PKG_NAME" /proc/mounts 2>/dev/null || :
 }
 
+NM_BIN=${NM_BIN:-/data/adb/modules/nomount/bin/nm}
+
+mount_mode() {
+        echo "${MOUNT_MODE:-bind}"
+}
+
+nm_check() {
+        [ -f "$NM_BIN" ] || return 1
+        "$NM_BIN" version >/dev/null 2>&1
+}
+
+nm_has_rule() {
+        "$NM_BIN" rule list 2>/dev/null | grep -q -- " -> ${RVPATH}\$"
+}
+
+nm_uninject() {
+        "$NM_BIN" rule list 2>/dev/null | while IFS= read -r l; do
+                [ "${l#* -> }" = "$RVPATH" ] || continue
+                "$NM_BIN" rule del "${l%% -> *}" >/dev/null 2>&1 || :
+        done
+        am force-stop "$PKG_NAME" || :
+}
+
 mount_rv() {
         if [ ! -d "${1}/lib" ]; then
                 ch_desc_err "Your installation got broken. Dont report this, consider using rvmm-zygisk-mount."
@@ -119,4 +142,68 @@ mount_rv_now() {
                 return 1
         fi
         mount_rv "$BASEPATH"
+}
+
+inject_rv() {
+        if [ ! -d "${1}/lib" ]; then
+                ch_desc_err "Your installation got broken. Dont report this, consider using rvmm-zygisk-mount."
+                return 1
+        fi
+        VERSION=$(get_app_version)
+        if [ "$VERSION" != "$PKG_VER" ] && [ "$VERSION" ]; then
+                ch_desc_err "Version mismatch (installed:$VERSION, module:$PKG_VER)"
+                return 1
+        fi
+        if ! OP=$(chcon u:object_r:apk_data_file:s0 "$RVPATH" 2>&1); then
+                ch_desc_err "Error chcon: '$OP'"
+                return 1
+        fi
+        nm_uninject
+        if ! OP=$("$NM_BIN" add "${1}/base.apk" "$RVPATH" 2>&1); then
+                ch_desc_err "nm add failed: '$OP'"
+                return 1
+        fi
+        cp -f "$MODDIR/module.prop.orig" "$MODDIR/module.prop"
+        sed -i 's/^description=\(.*\)$/description=\1 (NoMount)/' "$MODDIR/module.prop"
+        return 0
+}
+
+inject_rv_now() {
+        if ! BASEPATH=$(get_basepath); then
+                ch_desc_err "App not installed: '$BASEPATH'"
+                return 1
+        fi
+        inject_rv "$BASEPATH"
+}
+
+is_active() {
+        if [ "$(mount_mode)" = nomount ]; then
+                nm_has_rule
+        else
+                [ -n "$(get_mounts)" ]
+        fi
+}
+
+enable_rv() {
+        if [ "$(mount_mode)" = nomount ]; then
+                inject_rv_now
+        else
+                mount_rv_now
+        fi
+}
+
+disable_rv() {
+        if [ "$(mount_mode)" = nomount ]; then
+                nm_uninject
+        else
+                umount_all
+        fi
+}
+
+show_status() {
+        if [ "$(mount_mode)" = nomount ]; then
+                "$NM_BIN" rule list 2>/dev/null | grep -- " -> ${RVPATH}\$" || :
+        else
+                get_mounts
+        fi
 }
