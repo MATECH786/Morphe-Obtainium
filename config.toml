@@ -60,8 +60,9 @@ build-mode = "apk"
 uptodown-dlurl = "https://twitter.en.uptodown.com/android"
 apkmirror-dlurl = "https://apkmirror.com/apk/x-corp/twitter"
 version = "latest"
-patches-source = "crimera/piko"
+patches-source = "crimera/piko-newx"
 patches-version = "dev"
+included-patches = "'NewX: Restore Twitter branding'"
 
 [Instagram-Piko]
 enable = true

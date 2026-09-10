@@ -290,7 +290,7 @@ jobs:
           fi
 
           if [ -f temp/build_success.log ]; then
-            while IFS='|' read -r table_name version app_name brand patches_src patches_ver build_mode arch_f shim_ver; do
+            while IFS='|' read -r table_name version app_name brand patches_src patches_ver build_mode arch_f; do
               [ -z "$table_name" ] && continue
               local_app_tag="${app_name,,}"
               local_app_tag="${local_app_tag// /-}"
@@ -378,7 +378,7 @@ jobs:
             sleep 2
           }
 
-          while IFS='|' read -r table_name app_ver app_name brand patches_src patches_ver build_mode arch_f shim_ver; do
+          while IFS='|' read -r table_name app_ver app_name brand patches_src patches_ver build_mode arch_f; do
             [ -z "$table_name" ] && continue
 
             patches_display="${patches_ver}"
@@ -437,20 +437,12 @@ jobs:
               keyboard="{\"inline_keyboard\":[[${button_row}]]}"
             fi
 
-            shim_line=""
-            shim_link_part=""
-            if [ "${app_name,,}" = "x" ] && [ -n "${shim_ver-}" ]; then
-              shim_line="
-          <b>Shim</b>  <code>${shim_ver}</code>"
-              shim_link_part=' · <a href="https://gitlab.com/inotia00/x-shim/-/releases">Shim</a>'
-            fi
-
             MSG="<b>🔄 ${app_name} ${brand}</b>  •  <code>${app_ver}</code>
 
           <b>Patches</b>  <code>${patches_display}</code>
-          <b>${cli_name}</b>  <code>${cli_ver_display}</code>${shim_line}
+          <b>${cli_name}</b>  <code>${cli_ver_display}</code>
 
-          📋 ${patches_link} · ${cli_link}${shim_link_part}"
+          📋 ${patches_link} · ${cli_link}"
 
             send_tg "$MSG" "$keyboard"
 

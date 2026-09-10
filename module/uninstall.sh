@@ -1,9 +1,12 @@
 #!/system/bin/sh
 MODDIR=${0%/*}
-RV_DIR=/data/adb/Morphe-Module
-. "$MODDIR/config"
+. "$MODDIR/utils.sh"
 
-rm -f "${RV_DIR}/${MODDIR##*/}.apk"
+if [ "$(mount_mode)" = nomount ]; then
+        nm_uninject
+fi
+
+rm -f "$RVPATH"
 rmdir "$RV_DIR" 2>/dev/null || :
 
 rm -f "/data/adb/post-fs-data.d/$PKG_NAME-uninstall.sh"

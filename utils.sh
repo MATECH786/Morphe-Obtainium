@@ -99,10 +99,10 @@ get_prebuilts() {
                 local file
                 if [ "$tag" = "CLI" ]; then
                         file=$(find "$dir" -maxdepth 1 -name "*cli-${name_ver#v}*.jar" -o -name "*desktop-${name_ver#v}*.jar" -type f 2>/dev/null)
-                        local grab_cl=false
+                        local grab_cl="false"
                 elif [ "$tag" = "Patches" ]; then
                         file=$(find "$dir" -maxdepth 1 -name "*patches-${name_ver#v}.*" -type f 2>/dev/null)
-                        local grab_cl=true
+                        local grab_cl="true"
                 else abort unreachable; fi
 
                 local url tag_name matches
@@ -156,13 +156,17 @@ get_prebuilts() {
 
                         url=$(jq -r .url <<<"$asset")
                         name=$(jq -r .name <<<"$asset")
+                        if [ "$tag" = "Patches" ]; then
+                                local name_ext="${name##*.}"
+                                name="patches-${tag_name#v}.${name_ext}"
+                        fi
+
                         file="${dir}/${name}"
                         gh_dl "$file" "$url" >&2 || return 1
-                        echo "$tag: $(cut -d/ -f1 <<<"$src")/${name}  " >>"${cl_dir}/changelog.md"
+                        echo "$tag: ${src}/${name}  " >>"${cl_dir}/changelog.md"
                 else
-                        grab_cl=false
                         name=$(basename "$file")
-                        tag_name=$(cut -d'-' -f3- <<<"$name")
+                        tag_name=$(cut -d'-' -f2- <<<"$name")
                         tag_name=v${tag_name%.*}
                 fi
 
@@ -170,40 +174,6 @@ get_prebuilts() {
         done
         echo
 }
-
-get_gitlab_prebuilts() {
-        local src=$1 ver=$2
-        local proj="${src//\//%2F}"
-        local dir="${TEMP_DIR}/${src//\//-}-gl"
-        mkdir -p "$dir"
-
-        local resp
-        resp=$(req "https://gitlab.com/api/v4/projects/${proj}/releases" -) || {
-                epr "Failed to fetch GitLab releases for ${src}"
-                return 1
-        }
-
-        local tag_name dl_url
-        if [ "$ver" = "latest" ] || [ "$ver" = "dev" ]; then
-                tag_name=$(jq -r '.[0].tag_name' <<<"$resp")
-                dl_url=$(jq -r '.[0].assets.links[] | select(.name | test("\\.mpp$")) | .url' <<<"$resp" | head -1)
-        else
-                tag_name=$(jq -r --arg v "$ver" '.[] | select(.tag_name == $v or .tag_name == ("v"+$v)) | .tag_name' <<<"$resp" | head -1)
-                dl_url=$(jq -r --arg v "$ver" '.[] | select(.tag_name == $v or .tag_name == ("v"+$v)) | .assets.links[] | select(.name | test("\\.mpp$")) | .url' <<<"$resp" | head -1)
-        fi
-
-        if [ -z "$dl_url" ] || [ -z "$tag_name" ] || [ "$tag_name" = "null" ]; then
-                epr "No .mpp release found for ${src}@${ver}"
-                return 1
-        fi
-
-        local fname out
-        fname=$(awk -F/ '{print $NF}' <<<"$dl_url")
-        out="${dir}/${fname}"
-        req "$dl_url" "$out" || return 1
-        echo "$out $tag_name"
-}
-
 
 set_prebuilts() {
         local arch
@@ -403,19 +373,15 @@ get_patch_last_supported_ver() {
                 fi
         fi
         op=$(patches_list_versions "$cli_jar" "$patches_jar" "$pkg_name" "$is_experimental") || return 1
-        op=$(sed -n '/Most common compatible versions:/,$p' <<<"$op" | sed '1d' | awk '{$1=$1}1')
-        if [ "$op" = "Any" ]; then return; fi
-        pcount=$(head -1 <<<"$op") pcount=${pcount#*(} pcount=${pcount% *}
-        if [ -z "$pcount" ]; then
-                if grep -Fq "$pkg_name" <<<"$list_patches"; then
-                        return
-                else
-                        av_apps=$(java -jar "$cli_jar" list-versions "$patches_jar" 2>&1 | awk '/Package name:/ { printf "%s\x27%s\x27", sep, $NF; sep=", " } END { print "" }')
-                        epr "No patch versions found for '$pkg_name' in this patches source!\nAvailable applications found: $av_apps"
-                        return 1
-                fi
+        op=$(sed -n '/Most common compatible versions:/,$p' <<<"$op" | awk 'NR > 1 {print $1}')
+        if [ -z "$op" ]; then
+                av_apps=$(java -jar "$cli_jar" list-versions "$patches_jar" 2>&1 | awk '/Package name:/ { printf "%s\x27%s\x27", sep, $NF; sep=", " } END { print "" }')
+                epr "No patch versions found for '$pkg_name' in this patches source!\nAvailable applications found: $av_apps"
+                return 1
+        elif [ "$op" = "Any" ]; then
+                return
         fi
-        grep -F "($pcount patch" <<<"$op" | sed 's/ (.* patch.*//' | get_highest_ver || return 1
+        get_highest_ver <<<"$op" || return 1
 }
 
 patches_list_versions() {
@@ -777,11 +743,10 @@ get_direct_pkg_name() { cut -d- -f1 <<<"$__DIRECT_APKNAME__"; }
 get_direct_resp() { __DIRECT_APKNAME__=$(awk -F/ '{print $NF}' <<<"$1"); }
 
 patch_apk() {
-        local stock_input=$1 patched_apk=$2 patcher_args=$3 cli_jar=$4 patches_jar=$5 shim_jar=${6-}
+        local stock_input=$1 patched_apk=$2 patcher_args=$3 cli_jar=$4 patches_jar=$5
         local tmp_files
         tmp_files="$(pwd)/$(mktemp -d -p "$TEMP_DIR")"
         local patches_arg="--patches '$patches_jar'"
-        [ -n "$shim_jar" ] && patches_arg="--patches '$shim_jar' --patches '$patches_jar'"
         local cmd="java -jar '$cli_jar' patch '$stock_input' -o '$patched_apk' $patches_arg --keystore=ks.keystore \
 --keystore-entry-password=987654321 --keystore-password=987654321 --signer=DrSexo --keystore-entry-alias=DrSexo -t '$tmp_files' $patcher_args"
         pr "$cmd"
@@ -1006,7 +971,7 @@ build_rv() {
 
                 local apk_output="${BUILD_DIR}/${app_name_l}-${rv_brand_f}-v${version_f}-${arch_f}.apk"
                 if [ "${NORB:-}" != true ] || { [ ! -f "$patched_apk" ] && [ ! -f "$apk_output" ]; }; then
-                        if ! patch_apk "$stock_apk_to_patch" "$patched_apk" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}" "${args[shim_jar]-}"; then
+                        if ! patch_apk "$stock_apk_to_patch" "$patched_apk" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}"; then
                                 rm -f "$stock_apk_to_patch"
                                 if [ "$use_version_fallback" = true ] && [ "$build_mode" = "${build_mode_arr[0]}" ]; then
                                         pr "Patching failed for '${table}' v${version_f}, trying older versions..."
@@ -1046,7 +1011,7 @@ build_rv() {
                                                         local fb_stripped="${fb_stock}.stripped.apk"
                                                         prep_patch_input "$fb_stock" "$fb_stripped" "$build_mode"
 
-                                                        if patch_apk "$fb_stripped" "$fb_patched" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}" "${args[shim_jar]-}"; then
+                                                        if patch_apk "$fb_stripped" "$fb_patched" "${patcher_args[*]}" "${args[cli]}" "${args[ptjar]}"; then
                                                                 rm -f "$fb_stripped"
                                                                 pr "Fallback succeeded: v${fallback_ver} for ${table}"
                                                                 version="$fallback_ver"
@@ -1138,10 +1103,9 @@ build_rv() {
         done
 
         if [ "$build_success" = true ]; then
-                local patches_ver_clean shim_ver_clean
+                local patches_ver_clean
                 patches_ver_clean=$(extract_patches_version "${args[ptjar]}")
-                shim_ver_clean="${args[shim_ver]-}"
-                echo "${table}|${version}|${app_name}|${args[rv_brand]}|${args[patches_src]:-unknown}|${patches_ver_clean}|${mode_arg}|${arch_f}|${shim_ver_clean}" >> "$TEMP_DIR/build_success.log"
+                echo "${table}|${version}|${app_name}|${args[rv_brand]}|${args[patches_src]:-unknown}|${patches_ver_clean}|${mode_arg}|${arch_f}" >> "$TEMP_DIR/build_success.log"
         else
                 echo "${table}|FAILED|Patching failed" >> "$TEMP_DIR/build_failed.log"
         fi

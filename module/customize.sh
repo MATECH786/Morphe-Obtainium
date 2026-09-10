@@ -15,10 +15,109 @@ else abort "ERROR: This module is for arm64 only. Your device: $ARCH"; fi
 
 ui_print "* Detected root: $ROOT_SOL"
 
+if ! command -v timeout >/dev/null 2>&1; then
+        timeout() {
+                local _dur="$1"; shift
+                "$@" &
+                local _cpid=$!
+                (
+                        sleep "$_dur"
+                        kill -TERM "$_cpid" 2>/dev/null
+                        sleep 1
+                        kill -0 "$_cpid" 2>/dev/null && kill -KILL "$_cpid" 2>/dev/null
+                ) &
+                local _wpid=$!
+                wait "$_cpid" 2>/dev/null
+                local _rc=$?
+                kill "$_wpid" 2>/dev/null
+                return "$_rc"
+        }
+fi
+HAS_GETEVENT=1
+command -v getevent >/dev/null 2>&1 || HAS_GETEVENT=0
+
+_wait_vol_key() {
+        local _budget="$1" _deadline _now _chunk _ev
+        _deadline=$(( $(date +%s) + _budget ))
+        while true; do
+                _now=$(date +%s)
+                _chunk=$(( _deadline - _now ))
+                [ "$_chunk" -le 0 ] && { echo timeout; return 0; }
+                [ "$_chunk" -gt 2 ] && _chunk=2
+                _ev=$(timeout "$_chunk" getevent -qlc 1 2>/dev/null)
+                case "$_ev" in
+                        *KEY_VOLUMEUP*DOWN*)   echo up;   return 0 ;;
+                        *KEY_VOLUMEDOWN*DOWN*) echo down; return 0 ;;
+                esac
+        done
+}
+
+MODULES_DIR=${MODULES_DIR:-/data/adb/modules}
+MODID=$(sed -n 's/^id=//p' "$MODPATH/module.prop" 2>/dev/null | head -n 1)
+PREV_MODE=""
+if [ -n "$MODID" ] && [ -f "$MODULES_DIR/$MODID/config" ]; then
+        PREV_MODE=$(sed -n 's/^MOUNT_MODE=//p' "$MODULES_DIR/$MODID/config" | head -n 1)
+        PREV_MODE=${PREV_MODE:-bind}
+fi
+
+choose_mount_mode() {
+        MOUNT_MODE=bind
+        if [ "$ROOT_SOL" = kernelsu ] || [ "$ROOT_SOL" = apatch ]; then
+                if [ -n "$PREV_MODE" ]; then
+                        ui_print "* Detected existing installation ($PREV_MODE mode)"
+                fi
+                local choice=timeout
+                if [ "$HAS_GETEVENT" = 1 ]; then
+                        ui_print "* Select mount mode:"
+                        if [ "$PREV_MODE" = nomount ]; then
+                                ui_print "  Vol UP   = standard mount"
+                                ui_print "  Vol DOWN = NoMount (default)"
+                        else
+                                ui_print "  Vol UP   = standard mount (default)"
+                                ui_print "  Vol DOWN = NoMount"
+                        fi
+                        choice=$(_wait_vol_key 10)
+                fi
+                case "$choice" in
+                up)
+                        ui_print "* Using standard mount"
+                        ;;
+                down)
+                        ui_print "* Detecting NoMount..."
+                        if nm_check; then
+                                MOUNT_MODE=nomount
+                                ui_print "* NoMount detected"
+                        else
+                                ui_print "* NoMount not found, using standard mount"
+                        fi
+                        ;;
+                *)
+                        if [ "$PREV_MODE" = nomount ]; then
+                                if nm_check; then
+                                        MOUNT_MODE=nomount
+                                        ui_print "* NoMount mode (kept)"
+                                else
+                                        ui_print "* NoMount not found, using standard mount"
+                                fi
+                        else
+                                ui_print "* Using standard mount"
+                                [ "$HAS_GETEVENT" = 1 ] || ui_print "  (auto: no getevent)"
+                        fi
+                        ;;
+                esac
+        fi
+        if grep -q '^MOUNT_MODE=' "$MODPATH/config" 2>/dev/null; then
+                sed -i "s/^MOUNT_MODE=.*/MOUNT_MODE=$MOUNT_MODE/" "$MODPATH/config"
+        else
+                echo "MOUNT_MODE=$MOUNT_MODE" >>"$MODPATH/config"
+        fi
+}
+
 set_perm_recursive "$MODPATH/bin" 0 0 0755 0777
 
 ui_print "* Un-mounting existing binds"
 umount_all
+[ "$PREV_MODE" = nomount ] && nm_uninject
 
 if OP=$(dumpsys package "$PKG_NAME") && [ "$OP" ]; then
         if echo "$OP" | grep -m1 pkgFlags | grep -Fq UPDATED_SYSTEM_APP; then
@@ -140,6 +239,8 @@ fi
 
 set_perm "$MODPATH/base.apk" 1000 1000 644 u:object_r:apk_data_file:s0
 
+choose_mount_mode
+
 ui_print "* Mounting $PKG_NAME"
 # move out the apk from /data/adb/modules/.. to /data/adb/Morphe-Module to not trip some root detections
 mkdir -p "$RV_DIR"
@@ -147,19 +248,29 @@ mv -f "$MODPATH/base.apk" "$RVPATH"
 
 chcon u:object_r:apk_data_file:s0 "$RVPATH" 2>/dev/null || true
 
-umount_target "$BASEPATH/base.apk"
-if ! op=$(mount_bind "$RVPATH" "$BASEPATH/base.apk" 2>&1); then
-        ui_print "ERROR: Mount failed!"
-        ui_print "$op"
+if [ "$MOUNT_MODE" = nomount ]; then
+        ui_print "* Injecting via NoMount"
+        nm_uninject
+        if ! op=$("$NM_BIN" add "$BASEPATH/base.apk" "$RVPATH" 2>&1); then
+                ui_print "WARNING: NoMount injection failed, will retry at boot"
+                ui_print "$op"
+        fi
 else
-        susfs_hide_mount "$BASEPATH/base.apk"
+        umount_target "$BASEPATH/base.apk"
+        if ! op=$(mount_bind "$RVPATH" "$BASEPATH/base.apk" 2>&1); then
+                ui_print "ERROR: Mount failed!"
+                ui_print "$op"
+        else
+                susfs_hide_mount "$BASEPATH/base.apk"
+        fi
 fi
 am force-stop "$PKG_NAME"
+# ---MOUNT-STAGE-END---
 
 ui_print "* Optimizing $PKG_NAME"
 cmd package compile -m speed-profile -f "$PKG_NAME" >/dev/null 2>&1
 
-if [ "$KSU" ] || [ -f /data/adb/ksu/bin/ksud ]; then
+if [ "$MOUNT_MODE" != nomount ] && { [ "$KSU" ] || [ -f /data/adb/ksu/bin/ksud ]; }; then
         DUMPSYS=$(dumpsys package "$PKG_NAME" 2>&1)
         UID=$(echo "$DUMPSYS" | grep -m1 uid=)
         UID=${UID#*=} UID=${UID%% *}
